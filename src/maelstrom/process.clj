@@ -4,6 +4,7 @@
             [clojure [pprint :refer [pprint]]
                      [string :as str]]
             [clojure.java.io :as io]
+            [clojure.java.shell :refer [sh]]
             [clojure.tools.logging :refer [info warn]]
             [byte-streams :as bs]
             [cheshire.core :as json]
@@ -173,6 +174,7 @@
       :args         A list of arguments to the program
       :node-id      This node's ID
       :log-file     A string file to receive stderr output
+      :append?      Whether to append to (rather than truncate) the log file
       :net          A network.
       :log-stderr?  Whether to log stderr output from processes to our logger
 
@@ -190,7 +192,7 @@
         net     (:net opts)
         _       (net/add-node! net node-id)
         _       (io/make-parents (:log-file opts))
-        log     (io/writer (:log-file opts))
+        log     (io/writer (:log-file opts) :append (boolean (:append? opts)))
         bin     (.getCanonicalPath (io/file (:bin opts)))
         process (-> (ProcessBuilder. ^java.util.List (cons bin (:args opts)))
                     (.directory (io/file (:dir opts)))
@@ -254,3 +256,38 @@
      :stdin       @stdin-thread
      :stderr      @stderr-thread
      :stdout      @stdout-thread}))
+
+(defn kill-node!
+  "Forcibly kills a node's process for fault injection, and shuts down its IO
+  threads. Unlike `stop-node!`, this leaves the node registered in the network
+  (so peers can still address it; their messages simply pile up undelivered
+  until the node is restarted) and does not throw if the process has already
+  exited."
+  [{:keys [^Process process running? ^Writer log
+           stdin-thread stderr-thread stdout-thread]}]
+  (when (.isAlive process)
+    (.. process destroyForcibly (waitFor 5 TimeUnit/SECONDS)))
+
+  ; Shut down workers
+  (reset! running? false)
+  (mapv deref [stdin-thread stderr-thread stdout-thread])
+
+  ; Close log writer
+  (.close log))
+
+(defn signal-node!
+  "Sends a Unix signal (e.g. \"STOP\", \"CONT\") to a node's OS process. No-op if
+  the process has already exited."
+  [{:keys [^Process process]} signal]
+  (when (.isAlive process)
+    (sh "kill" (str "-" signal) (str (.pid process)))))
+
+(defn pause-node!
+  "Pauses a node's process by sending it SIGSTOP."
+  [node]
+  (signal-node! node "STOP"))
+
+(defn resume-node!
+  "Resumes a paused node's process by sending it SIGCONT."
+  [node]
+  (signal-node! node "CONT"))

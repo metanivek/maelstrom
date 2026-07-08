@@ -141,7 +141,9 @@ To make tests more or less aggressive, use:
 - `--latency MILLIS`: Approximate simulated network latency, during normal
   operations.
 - `--latency-dist DIST`: What latency distribution should Maelstrom use?
-- `--nemesis FAULT_TYPE`: A comma-separated list of faults to inject
+- `--nemesis FAULT_TYPE`: A comma-separated list of faults to inject. Options
+  are `partition` (network partitions), `kill` (kill and restart nodes), and
+  `pause` (suspend and resume node processes).
 - `--nemesis-interval SECONDS`: How long between nemesis operations, on average
 
 For broadcast tests, try
