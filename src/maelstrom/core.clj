@@ -48,7 +48,7 @@
 
 (def nemeses
   "A set of valid nemeses you can pass at the CLI."
-  #{:partition})
+  #{:partition :kill :pause})
 
 (defn maelstrom-test
   "Construct a Jepsen test from parsed CLI options"
@@ -203,7 +203,7 @@
     :parse-fn parse-long
     :validate [pos? "Must be positive."]]
 
-   [nil "--nemesis FAULTS" "A comma-separated list of faults to inject. The only fault currently is `partition`, which causes randomized network partitions between cluster nodes."
+   [nil "--nemesis FAULTS" "A comma-separated list of faults to inject. Options are `partition`, which causes randomized network partitions between cluster nodes; `kill`, which kills and restarts random nodes; and `pause`, which suspends and resumes random nodes' processes."
     :default #{}
     :parse-fn (fn [string]
                 (->> (str/split string #"\s*,\s*")
