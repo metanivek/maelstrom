@@ -99,6 +99,7 @@
          :latency-dist    (latency-dist latency)
          :p-loss          0
          :partitions      {}
+         :down-nodes      #{}
          :next-client-id  -1
          :next-message-id (atom -1)}))
 
@@ -151,6 +152,20 @@
   (swap! net update :queues dissoc node-id)
   net)
 
+(defn down!
+  "Marks a node as down (killed or paused). While a node is down, messages
+  sent to it are dropped once its queue reaches max-queue-size."
+  [net node-id]
+  (swap! net update :down-nodes conj node-id)
+  net)
+
+(defn up!
+  "Marks a node as up again, lifting the queue bound applied while it was
+  down."
+  [net node-id]
+  (swap! net update :down-nodes disj node-id)
+  net)
+
 (defn ^PriorityBlockingQueue queue-for
   "Returns the queue for a particular recipient node."
   [net node]
@@ -186,6 +201,16 @@
     0
     (long (draw (:latency-dist net)))))
 
+(def max-queue-size
+  "The maximum number of messages the network buffers for a node which is
+  currently down (killed or paused). A down node isn't draining its queue, so
+  once it holds this many messages, further messages destined for it are
+  dropped--a runaway backlog can't exhaust the heap and crash the test itself.
+  A node that recovers still receives up to this many of the messages sent
+  while it was down. Queues of running nodes are unbounded: under simulated
+  latency they legitimately hold (arrival rate * latency) messages."
+  10)
+
 (defn send!
   "Sends a message (either a map or Message) into the network. Message must
   contain :src and :dest keys, both node IDs. Generates an :id for the message.
@@ -216,8 +241,13 @@
       (let [src  (:src message)
             dest (:dest message)
             q    (queue-for net dest)]
-        (.put q {:deadline deadline
-                 :message  message})
+        ; A killed or paused node isn't draining its queue, so once it's full
+        ; we drop further messages rather than buffer an unbounded backlog.
+        ; Messages to running nodes are never dropped.
+        (when (or (not (contains? (:down-nodes n) dest))
+                  (< (.size q) max-queue-size))
+          (.put q {:deadline deadline
+                   :message  message}))
         net))))
 
 (defn recv!
@@ -245,3 +275,24 @@
 
             ; And deliver!
             message)))))
+
+(defn drain-queue!
+  "Removes and returns all buffered message envelopes for a node as a vector,
+  or nil if the node has no queue. Used to snapshot the backlog that piled up
+  for a killed node, so it can be redelivered once the node restarts."
+  [net node-id]
+  (when-let [^PriorityBlockingQueue q (-> @net :queues (get node-id))]
+    (let [drained (java.util.ArrayList.)]
+      (.drainTo q drained)
+      (vec drained))))
+
+(defn requeue!
+  "Re-inserts message envelopes (as produced by [[drain-queue!]]) into a node's
+  queue, capped at max-queue-size. Used to redeliver a restarted node's
+  backlog once it has initialized. Mutates and returns the network."
+  [net node-id envelopes]
+  (let [q (queue-for net node-id)]
+    (doseq [e envelopes]
+      (when (< (.size q) max-queue-size)
+        (.put q e))))
+  net)
