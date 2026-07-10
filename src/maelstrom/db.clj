@@ -47,19 +47,30 @@
   [opts net processes test node-id append?]
   (when-not (get @processes node-id)
     (info "Setting up" node-id)
-    (swap! processes assoc node-id
-           (process/start-node!
-             {:node-id  node-id
-              :bin      (:bin opts)
-              :args     (:args opts)
-              :net      net
-              :dir      (System/getProperty "java.io.tmpdir")
-              :log-stderr? (:log-stderr test)
-              :append?  append?
-              :log-file (->> (str node-id ".log")
-                             (store/path test "node-logs")
-                             .getCanonicalPath)}))
-    (init-node! net test node-id)))
+    ; On a restart, snapshot whatever queued up for the node while it was down.
+    ; `start-node!` below installs a fresh queue, so init is delivered first;
+    ; we redeliver the backlog once the node is up. On initial setup the node
+    ; has no queue yet and this is nil.
+    (let [backlog (net/drain-queue! net node-id)]
+      (swap! processes assoc node-id
+             (process/start-node!
+               {:node-id  node-id
+                :bin      (:bin opts)
+                :args     (:args opts)
+                :net      net
+                :dir      (System/getProperty "java.io.tmpdir")
+                :log-stderr? (:log-stderr test)
+                :append?  append?
+                :log-file (->> (str node-id ".log")
+                               (store/path test "node-logs")
+                               .getCanonicalPath)}))
+      (net/up! net node-id)
+      (init-node! net test node-id)
+      ; The restarted node now receives the messages peers sent to the previous
+      ; instance, as it would if it came back up on the same address.
+      (when (seq backlog)
+        (info "Redelivering" (count backlog) "buffered message(s) to" node-id)
+        (net/requeue! net node-id backlog)))))
 
 (defn db
   "Options:
@@ -102,6 +113,7 @@
       (kill! [_ test node]
         (if-let [p (get @processes node)]
           (do (info "Killing" node)
+              (net/down! net node)
               (process/kill-node! p)
               (swap! processes dissoc node)
               :killed)
@@ -118,6 +130,7 @@
       (pause! [_ test node]
         (if-let [p (get @processes node)]
           (do (info "Pausing" node)
+              (net/down! net node)
               (process/pause-node! p)
               :paused)
           :not-running))
@@ -126,5 +139,6 @@
         (if-let [p (get @processes node)]
           (do (info "Resuming" node)
               (process/resume-node! p)
+              (net/up! net node)
               :resumed)
           :not-running)))))
